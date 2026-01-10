@@ -74,7 +74,6 @@ public class ParserService {
     private String getSiteFromUrl(String url) {
         if (url.contains("habr.com")) return "habr";
         if (url.contains("hh.ru")) return "hh";
-        if (url.contains("superjob.ru")) return "superjob";
         return null;
     }
 
