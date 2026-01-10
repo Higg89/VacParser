@@ -3,15 +3,19 @@ package com.example.VacParser.service;
 import com.example.VacParser.model.Vacancy;
 import com.example.VacParser.parser.VacancyParser;
 import com.example.VacParser.repository.VacancyRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +30,7 @@ public class ParserService {
 
     private final VacancyRepository vacancyRepository;
     private final Map<String, VacancyParser> parsers;
+    private final ObjectMapper objectMapper;
     private final ExecutorService executorService = Executors.newFixedThreadPool(10);
     private final WebClient webClient = WebClient.builder()
             .defaultHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -52,20 +57,43 @@ public class ParserService {
             return;
         }
 
+        List<Vacancy> allVacancies = new ArrayList<>();
         try {
-            String contentUrl = url;
             if ("hh".equals(site)) {
                 String query = extractQueryFromUrl(url);
-                contentUrl = String.format("https://api.hh.ru/vacancies?text=%s&area=1&page=0&per_page=20", query);
-            }
+                String initialUrl = String.format("https://api.hh.ru/vacancies?text=%s&area=1&page=0&per_page=20", query);
+                String initialContent = webClient.get().uri(initialUrl).retrieve().bodyToMono(String.class).block();
+                if (initialContent == null) return;
 
-            String content = webClient.get().uri(contentUrl).retrieve().bodyToMono(String.class).block();
+                JsonNode root = objectMapper.readTree(initialContent);
+                int pages = root.path("pages").asInt(1);
 
-            if (content != null) {
-                List<Vacancy> vacancies = parser.parse(content);
-                vacancyRepository.saveAll(vacancies);
-                log.info("{}: Saved {} vacancies", site, vacancies.size());
+                allVacancies.addAll(parser.parse(initialContent));
+
+                for (int i = 1; i < pages; i++) {
+                    String pageUrl = String.format("https://api.hh.ru/vacancies?text=%s&area=1&page=%d&per_page=20", query, i);
+                    String pageContent = webClient.get().uri(pageUrl).retrieve().bodyToMono(String.class).block();
+                    if (pageContent != null) {
+                        allVacancies.addAll(parser.parse(pageContent));
+                    }
+                }
+            } else if ("habr".equals(site)) {
+                int page = 1;
+                while (true) {
+                    String pageUrl = url + "&page=" + page;
+                    String content = webClient.get().uri(pageUrl).retrieve().bodyToMono(String.class).block();
+                    if (content == null) break;
+
+                    List<Vacancy> vacancies = parser.parse(content);
+                    if (vacancies.isEmpty()) {
+                        break;
+                    }
+                    allVacancies.addAll(vacancies);
+                    page++;
+                }
             }
+            vacancyRepository.saveAll(allVacancies);
+            log.info("{}: Saved {} vacancies", site, allVacancies.size());
         } catch (Exception e) {
             log.error("Error parsing url: {}. Error: {}", url, e.getMessage());
         }
@@ -100,7 +128,7 @@ public class ParserService {
         }
         return all.parallelStream()
                 .filter(v -> v.getTitle().toLowerCase().contains(keyword.toLowerCase())
-                          || v.getCompany().toLowerCase().contains(keyword.toLowerCase()))
+                        || v.getCompany().toLowerCase().contains(keyword.toLowerCase()))
                 .sorted(Comparator.comparing(Vacancy::getTitle))
                 .collect(Collectors.toList());
     }
