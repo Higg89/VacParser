@@ -4,5 +4,8 @@ Content-Type: application/json
 {
     //"url": "https://career.habr.com/vacancies?type=all"
     //"url": "https://hh.ru/search/vacancy?text=Java&area=1"
-    "url": "https://www.superjob.ru/vacancy/search/?keywords=Java&geo%5Bt%5D%5B0%5D=4"
+    //"url": "https://tyumen.hh.ru/search/vacancy?text=C%23"
+    //"url": "https://tyumen.hh.ru/search/vacancy"
+    //"url": "https://www.superjob.ru/vacancy/search/?keywords=Java"
+    //"url": "https://www.superjob.ru/vacancy/search/"
 }
