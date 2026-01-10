@@ -27,9 +27,10 @@ public class SuperJobParser implements VacancyParser {
             if (titleElement != null) {
                 String title = titleElement.text();
                 String link = "https://www.superjob.ru" + titleElement.attr("href");
-                String salary = card.select("span.f-test-text-company-item-salary").text();
+                String salary = card.select("div.f-test-text-company-item-salary span").text();
                 String company = card.select("span.f-test-text-vacancy-item-company-name").text();
-                String city = card.select("span.f-test-text-company-item-location").text();
+                // A more robust selector to find the city
+                String city = card.select("div:has(span.f-test-text-vacancy-item-company-name) ~ div span").text();
 
                 vacancies.add(new Vacancy(title, company, salary, city, link));
             }
