@@ -15,6 +15,11 @@ public class ParserController {
 
     private final ParserService parserService;
 
+    @GetMapping("/")
+    public String home() {
+        return "VacParser is running. Use POST /parse with JSON {\"url\":\"...\"} to start parsing and GET /answer?keyword=... to see results.";
+    }
+
     // Эндпоинт для запуска парсинга
     @PostMapping("/parse")
     public ResponseEntity<String> startParsing(@RequestBody Map<String, String> request) {

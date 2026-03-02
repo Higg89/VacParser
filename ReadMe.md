@@ -14,7 +14,7 @@
 - **Lombok**
 - **Jsoup** (для скрапинга HTML)
 - **Jackson** (для анализа JSON)
-- **Spring WebFlux `WebClient`** (для отправки HTTP-запросов)
+- **Spring Web (RestTemplate)** (для отправки HTTP-запросов)
 
 ## Как использовать:
 1.  **Запуск приложения:**

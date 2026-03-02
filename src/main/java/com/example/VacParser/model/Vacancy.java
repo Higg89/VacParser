@@ -6,6 +6,7 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 @Entity
+@Table(uniqueConstraints = @UniqueConstraint(columnNames = "url"))
 @Data
 @NoArgsConstructor
 public class Vacancy {
@@ -17,6 +18,7 @@ public class Vacancy {
     private String company;
     private String salary;
     private String city;
+    @Column(nullable = false, unique = true)
     private String url;
 
     private LocalDateTime parsedAt;

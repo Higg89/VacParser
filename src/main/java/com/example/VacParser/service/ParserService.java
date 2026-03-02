@@ -8,9 +8,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
 import java.net.URLDecoder;
@@ -19,8 +20,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
@@ -31,16 +35,22 @@ public class ParserService {
     private final VacancyRepository vacancyRepository;
     private final Map<String, VacancyParser> parsers;
     private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate;
     private final ExecutorService executorService = Executors.newFixedThreadPool(10);
-    private final WebClient webClient = WebClient.builder()
-            .defaultHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .defaultHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-            .defaultHeader("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
-            .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(16 * 1024 * 1024))
-            .build();
+    private final Set<String> inProgressUrls = ConcurrentHashMap.newKeySet();
 
     public void startParsing(String url) {
-        executorService.submit(() -> parseAndSave(url));
+        if (!inProgressUrls.add(url)) {
+            log.info("Parsing already in progress for url: {}", url);
+            return;
+        }
+        executorService.submit(() -> {
+            try {
+                parseAndSave(url);
+            } finally {
+                inProgressUrls.remove(url);
+            }
+        });
     }
 
     private void parseAndSave(String url) {
@@ -62,7 +72,7 @@ public class ParserService {
             if ("hh".equals(site)) {
                 String query = extractQueryFromUrl(url);
                 String initialUrl = String.format("https://api.hh.ru/vacancies?text=%s&area=1&page=0&per_page=20", query);
-                String initialContent = webClient.get().uri(initialUrl).retrieve().bodyToMono(String.class).block();
+                String initialContent = restTemplate.getForObject(initialUrl, String.class);
                 if (initialContent == null) return;
 
                 JsonNode root = objectMapper.readTree(initialContent);
@@ -72,7 +82,7 @@ public class ParserService {
 
                 for (int i = 1; i < pages; i++) {
                     String pageUrl = String.format("https://api.hh.ru/vacancies?text=%s&area=1&page=%d&per_page=20", query, i);
-                    String pageContent = webClient.get().uri(pageUrl).retrieve().bodyToMono(String.class).block();
+                    String pageContent = restTemplate.getForObject(pageUrl, String.class);
                     if (pageContent != null) {
                         allVacancies.addAll(parser.parse(pageContent));
                     }
@@ -81,7 +91,7 @@ public class ParserService {
                 int page = 1;
                 while (true) {
                     String pageUrl = url + "&page=" + page;
-                    String content = webClient.get().uri(pageUrl).retrieve().bodyToMono(String.class).block();
+                    String content = restTemplate.getForObject(pageUrl, String.class);
                     if (content == null) break;
 
                     List<Vacancy> vacancies = parser.parse(content);
@@ -92,20 +102,31 @@ public class ParserService {
                     page++;
                 }
             }
-            vacancyRepository.saveAll(allVacancies);
-            log.info("{}: Saved {} vacancies", site, allVacancies.size());
+
+            List<Vacancy> uniqueVacancies = allVacancies.stream()
+                    .collect(Collectors.collectingAndThen(
+                            Collectors.toMap(Vacancy::getUrl, v -> v, (v1, v2) -> v1),
+                            m -> new ArrayList<>(m.values())
+                    ));
+
+            try {
+                vacancyRepository.saveAll(uniqueVacancies);
+                log.info("{}: Saved {} vacancies", site, uniqueVacancies.size());
+            } catch (DataIntegrityViolationException e) {
+                log.warn("Duplicate vacancies detected while saving for site {}", site, e);
+            }
         } catch (Exception e) {
             log.error("Error parsing url: {}. Error: {}", url, e.getMessage());
         }
     }
     
-    private String getSiteFromUrl(String url) {
+    String getSiteFromUrl(String url) {
         if (url.contains("habr.com")) return "habr";
         if (url.contains("hh.ru")) return "hh";
         return null;
     }
 
-    private String extractQueryFromUrl(String url) {
+    String extractQueryFromUrl(String url) {
         try {
             URI uri = new URI(url);
             String[] params = uri.getQuery().split("&");
@@ -140,6 +161,17 @@ public class ParserService {
 
     @PreDestroy
     public void shutdown() {
+        log.info("Shutting down parser executor service");
         executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(30, TimeUnit.SECONDS)) {
+                log.warn("Executor did not terminate in the specified time.");
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            log.warn("Shutdown interrupted, forcing shutdownNow");
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 }
