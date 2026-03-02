@@ -5,12 +5,17 @@ import com.example.VacParser.parser.VacancyParser;
 import com.example.VacParser.repository.VacancyRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
 import java.net.URI;
@@ -36,8 +41,34 @@ public class ParserService {
     private final Map<String, VacancyParser> parsers;
     private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
+    private final MeterRegistry meterRegistry;
     private final ExecutorService executorService = Executors.newFixedThreadPool(10);
     private final Set<String> inProgressUrls = ConcurrentHashMap.newKeySet();
+
+    private Counter parsingSuccessCounter;
+    private Counter parsingErrorCounter;
+    private Counter savedVacanciesCounter;
+    private Timer parsingTimer;
+
+    @PostConstruct
+    void initMetrics() {
+        this.parsingSuccessCounter = Counter.builder("vacparser.parsing.success.count")
+                .description("Количество успешно завершённых операций парсинга")
+                .register(meterRegistry);
+
+        this.parsingErrorCounter = Counter.builder("vacparser.parsing.error.count")
+                .description("Количество операций парсинга, завершившихся с ошибкой")
+                .register(meterRegistry);
+
+        this.savedVacanciesCounter = Counter.builder("vacparser.vacancies.saved.count")
+                .description("Общее количество вакансий, сохранённых в базу данных")
+                .register(meterRegistry);
+
+        this.parsingTimer = Timer.builder("vacparser.parsing.duration")
+                .description("Время выполнения полной операции парсинга")
+                .publishPercentileHistogram()
+                .register(meterRegistry);
+    }
 
     public void startParsing(String url) {
         if (!inProgressUrls.add(url)) {
@@ -45,35 +76,51 @@ public class ParserService {
             return;
         }
         executorService.submit(() -> {
+            Timer.Sample sample = Timer.start(meterRegistry);
             try {
-                parseAndSave(url);
+                int saved = parseAndSave(url);
+                parsingSuccessCounter.increment();
+                if (saved > 0) {
+                    savedVacanciesCounter.increment(saved);
+                }
             } finally {
+                sample.stop(parsingTimer);
                 inProgressUrls.remove(url);
             }
         });
     }
 
-    private void parseAndSave(String url) {
+    private int parseAndSave(String url) {
         log.info("Thread [{}] started parsing: {}", Thread.currentThread().getName(), url);
         String site = getSiteFromUrl(url);
         if (site == null) {
             log.warn("Unknown domain for URL: {}", url);
-            return;
+            parsingErrorCounter.increment();
+            return 0;
         }
 
         VacancyParser parser = parsers.get(site);
         if (parser == null) {
             log.warn("No parser found for site: {}", site);
-            return;
+            parsingErrorCounter.increment();
+            return 0;
         }
 
         List<Vacancy> allVacancies = new ArrayList<>();
         try {
             if ("hh".equals(site)) {
                 String query = extractQueryFromUrl(url);
+                if (query == null || query.isBlank()) {
+                    log.warn("Empty search query for hh URL '{}', skipping API call", url);
+                    parsingErrorCounter.increment();
+                    return 0;
+                }
                 String initialUrl = String.format("https://api.hh.ru/vacancies?text=%s&area=1&page=0&per_page=20", query);
                 String initialContent = restTemplate.getForObject(initialUrl, String.class);
-                if (initialContent == null) return;
+                if (initialContent == null) {
+                    parsingErrorCounter.increment();
+                    return 0;
+                }
 
                 JsonNode root = objectMapper.readTree(initialContent);
                 int pages = root.path("pages").asInt(1);
@@ -112,12 +159,27 @@ public class ParserService {
             try {
                 vacancyRepository.saveAll(uniqueVacancies);
                 log.info("{}: Saved {} vacancies", site, uniqueVacancies.size());
+                return uniqueVacancies.size();
             } catch (DataIntegrityViolationException e) {
                 log.warn("Duplicate vacancies detected while saving for site {}", site, e);
+                return 0;
             }
+        } catch (HttpClientErrorException.Forbidden e) {
+            parsingErrorCounter.increment();
+            String body = e.getResponseBodyAsString();
+            if (body != null && body.contains("captcha_required")) {
+                log.warn("HH API returned captcha_required for url {}. Body: {}", url, body);
+            } else {
+                log.error("HH API returned 403 Forbidden for url {}. Body: {}", url, body, e);
+            }
+        } catch (HttpClientErrorException e) {
+            parsingErrorCounter.increment();
+            log.error("HTTP client error while parsing url {}. Status: {}, body: {}", url, e.getStatusCode(), e.getResponseBodyAsString(), e);
         } catch (Exception e) {
-            log.error("Error parsing url: {}. Error: {}", url, e.getMessage());
+            parsingErrorCounter.increment();
+            log.error("Error parsing url: {}. Error: {}", url, e.getMessage(), e);
         }
+        return 0;
     }
     
     String getSiteFromUrl(String url) {
@@ -129,7 +191,12 @@ public class ParserService {
     String extractQueryFromUrl(String url) {
         try {
             URI uri = new URI(url);
-            String[] params = uri.getQuery().split("&");
+            String query = uri.getQuery();
+            if (query == null || query.isEmpty()) {
+                log.warn("No query string present in URL '{}'", url);
+                return "";
+            }
+            String[] params = query.split("&");
             for (String param : params) {
                 String[] pair = param.split("=");
                 if (pair.length == 2 && ("q".equals(pair[0]) || "text".equals(pair[0]) || "keywords".equals(pair[0]))) {

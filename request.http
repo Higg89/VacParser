@@ -8,5 +8,5 @@ Content-Type: application/json
     //"url": "https://tyumen.hh.ru/search/vacancy"
     //"url": "https://www.superjob.ru/vacancy/search/?keywords=Java"
     //"url": "https://www.superjob.ru/vacancy/search/"
-    "url": "https://hh.ru/search/vacancy?text=java+developer&area=1"
+    //"url": "https://hh.ru/search/vacancy?text=java+developer&area=1"
 }

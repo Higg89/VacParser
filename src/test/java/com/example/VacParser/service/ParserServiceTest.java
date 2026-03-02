@@ -4,6 +4,7 @@ import com.example.VacParser.model.Vacancy;
 import com.example.VacParser.parser.VacancyParser;
 import com.example.VacParser.repository.VacancyRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestTemplate;
@@ -22,6 +23,7 @@ class ParserServiceTest {
     private Map<String, VacancyParser> parsers;
     private ObjectMapper objectMapper;
     private RestTemplate restTemplate;
+    private MeterRegistry meterRegistry;
     private ParserService parserService;
 
     @BeforeEach
@@ -30,7 +32,8 @@ class ParserServiceTest {
         parsers = new HashMap<>();
         objectMapper = new ObjectMapper();
         restTemplate = mock(RestTemplate.class);
-        parserService = new ParserService(vacancyRepository, parsers, objectMapper, restTemplate);
+        meterRegistry = mock(MeterRegistry.class);
+        parserService = new ParserService(vacancyRepository, parsers, objectMapper, restTemplate, meterRegistry);
     }
 
     @Test
